@@ -67,9 +67,99 @@ def test_cli_baseline_then_change(capsys=None):
         assert main([src, "--state", state]) == 10
 
 
+if __name__ == "__main__":  # original runner kept; full suite below
+    test_diff_semantics()
+    test_removed()
+    test_custom_volatile_and_id()
+    test_cli_baseline_then_change()
+    print("PASS: core quietwatch tests")
+
+
+# ---------- edge cases ----------
+
+def _run_cli(src_text, argv_extra=()):
+    from quietwatch import main
+    with tempfile.TemporaryDirectory() as d:
+        src = os.path.join(d, "src.json")
+        state = os.path.join(d, "state.json")
+        with open(src, "w") as f:
+            f.write(src_text)
+        return main([src, "--state", state, *argv_extra])
+
+
+def test_load_source_variants():
+    from quietwatch import load_source
+    with tempfile.TemporaryDirectory() as d:
+        single = os.path.join(d, "single.json")
+        with open(single, "w") as f:
+            json.dump({"id": "X", "v": 1}, f)
+        assert load_source(single) == [{"id": "X", "v": 1}]
+        wrapped = os.path.join(d, "wrapped.json")
+        with open(wrapped, "w") as f:
+            json.dump({"items": BASE}, f)
+        assert load_source(wrapped) == BASE
+        data_key = os.path.join(d, "data.json")
+        with open(data_key, "w") as f:
+            json.dump({"data": BASE[:2]}, f)
+        assert load_source(data_key) == BASE[:2]
+        assert load_source("cmd:echo " + json.dumps(BASE).replace('"', '\\"')) == BASE
+
+
+def test_malformed_source_exits_2():
+    assert _run_cli("{not valid json") == 2
+
+
+def test_alert_on_first_run():
+    # default: first run is a silent baseline
+    assert _run_cli(json.dumps(BASE)) == 0
+    # with the flag: first run reports everything
+    assert _run_cli(json.dumps(BASE), ("--alert-on-first-run",)) == 10
+
+
+def test_non_dict_records_skipped():
+    w = Watcher()
+    mixed = [{"id": "A", "v": 1}, "junk", 42, {"noid": True}, {"id": "B", "v": 2}]
+    assert w.check(mixed) == [("NEW", "A"), ("NEW", "B")]
+    assert w.check(mixed) == []  # replay stays silent
+
+
+def test_volatile_empty_means_none():
+    w = Watcher(volatile=())
+    assert w.check([{"id": "x", "ts": "old"}]) == [("NEW", "x")]
+    assert w.check([{"id": "x", "ts": "new"}]) == [("MODIFIED", "x")]
+
+
+def test_corrupt_state_file_is_forgiving():
+    from quietwatch import main
+    with tempfile.TemporaryDirectory() as d:
+        src = os.path.join(d, "src.json")
+        state = os.path.join(d, "state.json")
+        with open(src, "w") as f:
+            json.dump(BASE, f)
+        with open(state, "w") as f:
+            f.write("garbage{{{")
+        # treated as a fresh baseline, not a crash
+        assert main([src, "--state", state]) == 0
+
+
+def test_removed_state_cleanup():
+    # after a REMOVED alert, the id is forgotten: if it returns, it's NEW
+    w = Watcher()
+    w.check(BASE)
+    assert w.check(BASE[:2]) == [("REMOVED", "C")]
+    assert w.check(BASE) == [("NEW", "C")]
+
+
 if __name__ == "__main__":
     test_diff_semantics()
     test_removed()
     test_custom_volatile_and_id()
     test_cli_baseline_then_change()
+    test_load_source_variants()
+    test_malformed_source_exits_2()
+    test_alert_on_first_run()
+    test_non_dict_records_skipped()
+    test_volatile_empty_means_none()
+    test_corrupt_state_file_is_forgiving()
+    test_removed_state_cleanup()
     print("PASS: all quietwatch tests")
