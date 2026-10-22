@@ -70,6 +70,7 @@ so cron and agent loops can branch without parsing output.
 | `--no-removed` | off | Don't report records that disappear |
 | `--alert-on-first-run` | off | Report all records as NEW on first run |
 | `--webhook URL` | — | POST the events array to this URL on change |
+| `--version` | — | Print version and exit |
 
 Sources may be a JSON array of objects, a single object, or an object
 wrapping a list under `items` / `results` / `data` / `records`.
