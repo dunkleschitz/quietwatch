@@ -4,6 +4,7 @@ All notable changes to this project are recorded here. Dates in EDT.
 License TBD (awaiting the maintainer's per-project publication approval).
 
 ## [Unreleased]
+- Added `--version` flag (bench-wide CLI convention: `<tool> <VERSION>`; module-level `VERSION` constant as single source of truth).
 
 ### Added
 - `CHANGELOG.md`

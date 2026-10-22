@@ -26,6 +26,8 @@ import subprocess
 import sys
 import urllib.request
 
+VERSION = "1.0.0"
+
 DEFAULT_VOLATILE = ("last_seen", "fetched_at", "timestamp", "_ts")
 
 
@@ -132,6 +134,7 @@ def main(argv=None):
     p = argparse.ArgumentParser(
         prog="quietwatch",
         description="Alert only on real changes in a JSON source.")
+    p.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
     p.add_argument("source", help="URL, file path, or 'cmd:<shell command>'")
     p.add_argument("--state", default="quietwatch-state.json",
                    help="state file path (default: quietwatch-state.json)")
