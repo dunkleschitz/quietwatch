@@ -92,6 +92,22 @@ baseline-then-change CLI flow, replay silence.
 - State file is plain JSON — fine for one watcher per source; not a
   concurrent-writer database.
 
+## Pre-publish checklist
+
+Per the project charter, nothing ships publicly until the maintainer
+approves the publishing account/org and the license. Before
+first publication:
+
+1. **Secrets hygiene** — run a secrets scan over the repo and its history
+   (`gitleaks detect --source .` or `trufflehog git file://.`), resolve
+   every hit, and grep once more for obvious keys/tokens by hand.
+2. **History review** — read `git log` and the full diff end-to-end; no
+   credentials, private paths, or personal data may be committed.
+3. **License** — replace the TBD notice with the maintainer-approved
+   LICENSE file.
+4. **Approval** — get the maintainer's go-ahead for this project's first
+   public publication.
+
 ## License
 
 TBD (pending maintainer approval).
