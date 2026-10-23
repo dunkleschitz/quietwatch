@@ -14,6 +14,13 @@ once per change, even across restarts.
 
 Stdlib only. Python 3.9+.
 
+`--select PATH` narrows the watch to one JSON subtree before record
+extraction (dot-path with optional [N] indices, e.g.
+'payload.releases' or 'envs[0].items'); changes outside the selection
+stay silent. A selection miss is an error (exit 2), never an empty
+watch. Tip: use a separate --state file per --select value, since
+record identities come from the selected subtree.
+
 Exit codes: 0 = no changes, 10 = changes detected, 2 = error.
 (The distinct "changes" code makes cron/agent use trivial:
 `quietwatch ... || [ $? -eq 10 ] && notify`.)
@@ -22,11 +29,12 @@ Exit codes: 0 = no changes, 10 = changes detected, 2 = error.
 import argparse
 import hashlib
 import json
+import re
 import subprocess
 import sys
 import urllib.request
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 DEFAULT_VOLATILE = ("last_seen", "fetched_at", "timestamp", "_ts")
 
@@ -83,10 +91,44 @@ class Watcher:
 
 # ---------- sources ----------
 
-def load_source(source):
+def resolve_select(data, path):
+    """Walk a dot-path with optional [N] list indices into parsed JSON.
+
+    Grammar: SEG(.SEG)* where each segment is KEY, KEY[IDX], or [IDX].
+    Example: 'payload.releases' or 'envs[0].items'.
+    Raises ValueError on any miss (missing key, index out of range,
+    malformed segment) so the caller fails loudly (exit 2) instead of
+    silently watching an empty subtree.
+    """
+    cur = data
+    for seg in path.split("."):
+        m = re.fullmatch(r"([^\[\]]+)?\[(\d+)\]", seg)
+        if m:
+            key, idx = m.group(1), int(m.group(2))
+        elif "[" in seg or "]" in seg or not seg:
+            raise ValueError(f"bad --select path {path!r}: "
+                             f"malformed segment {seg!r}")
+        else:
+            key, idx = seg, None
+        if key:
+            if not isinstance(cur, dict) or key not in cur:
+                raise ValueError(f"--select path {path!r}: "
+                                 f"key {key!r} not found")
+            cur = cur[key]
+        if idx is not None:
+            if not isinstance(cur, list) or idx >= len(cur):
+                raise ValueError(f"--select path {path!r}: "
+                                 f"index [{idx}] out of range")
+            cur = cur[idx]
+    return cur
+
+
+def load_source(source, select=None):
     """Load a snapshot (list of records) from a URL, file path, or
     'cmd:...' shell command. Accepts a JSON array, a single JSON object,
-    or an object with a list under a common key (items/results/data)."""
+    or an object with a list under a common key (items/results/data).
+    If `select` is given, a dot-path (see resolve_select) is resolved
+    against the parsed JSON first, so only that subtree is watched."""
     if source.startswith("cmd:"):
         out = subprocess.run(source[4:], shell=True, capture_output=True,
                              text=True, timeout=120)
@@ -94,13 +136,15 @@ def load_source(source):
             raise RuntimeError(f"command failed ({out.returncode}): {out.stderr[:200]}")
         raw = out.stdout
     elif source.startswith(("http://", "https://")):
-        req = urllib.request.Request(source, headers={"User-Agent": "quietwatch/1.0"})
+        req = urllib.request.Request(source, headers={"User-Agent": "quietwatch/1.1"})
         with urllib.request.urlopen(req, timeout=60) as resp:
             raw = resp.read().decode("utf-8", "replace")
     else:
         with open(source, "r", encoding="utf-8") as f:
             raw = f.read()
     data = json.loads(raw)
+    if select:
+        data = resolve_select(data, select)
     if isinstance(data, dict):
         for key in ("items", "results", "data", "records"):
             if isinstance(data.get(key), list):
@@ -150,6 +194,10 @@ def main(argv=None):
                         "(default: first run silently establishes baseline)")
     p.add_argument("--webhook", metavar="URL",
                    help="POST the JSON events array to this URL on change")
+    p.add_argument("--select", metavar="PATH",
+                   help="dot-path into the JSON before record extraction, "
+                        "e.g. 'payload.releases' or 'envs[0].items' "
+                        "(default: whole document); a miss is an error")
     args = p.parse_args(argv)
 
     volatile = tuple(v for v in args.volatile.split(",") if v)
@@ -157,7 +205,7 @@ def main(argv=None):
     w = Watcher(volatile=volatile, id_field=args.id_field,
                 alert_removed=not args.no_removed, state=hashes)
     try:
-        snapshot = load_source(args.source)
+        snapshot = load_source(args.source, select=args.select)
     except Exception as e:                       # noqa: BLE001 - CLI surface
         print(f"quietwatch: error: {e}", file=sys.stderr)
         return 2

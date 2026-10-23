@@ -129,6 +129,72 @@ def test_volatile_empty_means_none():
     assert w.check([{"id": "x", "ts": "new"}]) == [("MODIFIED", "x")]
 
 
+# ---------- --select ----------
+
+def test_select_nested_wrapper():
+    from quietwatch import load_source
+    with tempfile.TemporaryDirectory() as d:
+        p = os.path.join(d, "s.json")
+        with open(p, "w") as f:
+            json.dump({"payload": {"releases": BASE}, "meta": {"n": 3}}, f)
+        assert load_source(p, select="payload.releases") == BASE
+
+
+def test_select_index_segments():
+    from quietwatch import load_source
+    with tempfile.TemporaryDirectory() as d:
+        p = os.path.join(d, "s.json")
+        with open(p, "w") as f:
+            json.dump({"envs": [{"items": BASE}, {"items": []}]}, f)
+        assert load_source(p, select="envs[0].items") == BASE
+        assert load_source(p, select="envs[1].items") == []
+
+
+def test_select_single_object_becomes_record():
+    from quietwatch import load_source
+    with tempfile.TemporaryDirectory() as d:
+        p = os.path.join(d, "s.json")
+        with open(p, "w") as f:
+            json.dump({"app": {"id": "X", "v": 1}}, f)
+        assert load_source(p, select="app") == [{"id": "X", "v": 1}]
+
+
+def test_select_miss_and_malformed_raise():
+    from quietwatch import resolve_select
+    doc = {"a": {"b": [1, 2]}}
+    for bad in ("a.missing", "a.b[9]", "a.b.c", "a[0]", "[0]",
+                "a[]", "a[", ".a", "a..b", "a[-1]"):
+        try:
+            resolve_select(doc, bad)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("expected ValueError for %r" % bad)
+
+
+def test_select_cli_watches_only_subtree():
+    with tempfile.TemporaryDirectory() as d:
+        src = os.path.join(d, "src.json")
+        state = os.path.join(d, "state.json")
+        doc = {"unwatched": [{"id": "Z", "v": 1}], "watched": {"items": BASE}}
+        with open(src, "w") as f:
+            json.dump(doc, f)
+        argv = [src, "--state", state, "--select", "watched"]
+        assert main(argv) == 0                            # baseline
+        doc["unwatched"][0]["v"] = 2                      # outside selection
+        with open(src, "w") as f:
+            json.dump(doc, f)
+        assert main(argv) == 0, "change outside --select must stay silent"
+        doc["watched"]["items"][0]["title"] = "alpha2"    # inside selection
+        with open(src, "w") as f:
+            json.dump(doc, f)
+        assert main(argv) == 10
+
+
+def test_select_miss_exits_2():
+    assert _run_cli(json.dumps({"a": 1}), ("--select", "nope")) == 2
+
+
 def test_corrupt_state_file_is_forgiving():
     from quietwatch import main
     with tempfile.TemporaryDirectory() as d:

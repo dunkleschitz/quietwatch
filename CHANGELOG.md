@@ -3,6 +3,14 @@
 All notable changes to this project are recorded here. Dates in EDT.
 License TBD (awaiting the maintainer's per-project publication approval).
 
+## [1.1.0] — 2026-10-22
+
+- `--select PATH`: watch one JSON subtree (dot-path with optional `[N]`
+  indices, e.g. `payload.releases`, `envs[0].items`). Resolves before
+  the `items`/`results`/`data`/`records` wrapper logic; a miss or
+  malformed path is an error (exit 2), never a silent empty watch.
+  Changes outside the selection stay silent. 6 new tests.
+
 ## [Unreleased]
 - Added `--version` flag (bench-wide CLI convention: `<tool> <VERSION>`; module-level `VERSION` constant as single source of truth).
 

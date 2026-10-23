@@ -49,6 +49,9 @@ chmod +x quietwatch.py
 
 # Also POST the events to a webhook when something changes
 ./quietwatch.py ./feed.json --state s.json --webhook https://hooks.example.com/x
+
+# Watch only the 'releases' subtree of a big status document
+./quietwatch.py ./status.json --state s.json --select payload.releases
 ```
 
 Output on change (stdout, one JSON array) and exit code **10**:
@@ -70,10 +73,15 @@ so cron and agent loops can branch without parsing output.
 | `--no-removed` | off | Don't report records that disappear |
 | `--alert-on-first-run` | off | Report all records as NEW on first run |
 | `--webhook URL` | — | POST the events array to this URL on change |
+| `--select PATH` | — | Dot-path into the JSON before record extraction (`payload.releases`, `envs[0].items`); a miss is an error (exit 2) |
 | `--version` | — | Print version and exit |
 
 Sources may be a JSON array of objects, a single object, or an object
 wrapping a list under `items` / `results` / `data` / `records`.
+`--select` resolves first, then the wrapper logic applies to the selected
+subtree — so `--select payload` on `{"payload": {"items": [...]}}` finds
+the list. Tip: use a separate `--state` file per `--select` value, since
+record identities are computed from the selected subtree.
 
 ## Tests
 
