@@ -67,12 +67,7 @@ def test_cli_baseline_then_change(capsys=None):
         assert main([src, "--state", state]) == 10
 
 
-if __name__ == "__main__":  # original runner kept; full suite below
-    test_diff_semantics()
-    test_removed()
-    test_custom_volatile_and_id()
-    test_cli_baseline_then_change()
-    print("PASS: core quietwatch tests")
+# (full runner at end of file)
 
 
 # ---------- edge cases ----------
@@ -216,6 +211,121 @@ def test_removed_state_cleanup():
     assert w.check(BASE) == [("NEW", "C")]
 
 
+RSS_FEED = """<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+<channel>
+<title>Releases</title>
+<item><guid>https://x.example/r/1</guid><title>v1.0</title>
+<link>https://x.example/r/1</link><description>first</description>
+<pubDate>Mon, 20 Oct 2026 00:00:00 GMT</pubDate></item>
+<item><title>v1.1 (no guid)</title>
+<link>https://x.example/r/2</link><description>second</description>
+<pubDate>Tue, 21 Oct 2026 00:00:00 GMT</pubDate></item>
+</channel>
+</rss>"""
+
+ATOM_FEED = """<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+<title>Blog</title>
+<entry><id>urn:post:1</id><title>Hello</title>
+<link href="https://x.example/p/1"/>
+<updated>2026-10-20T00:00:00Z</updated><summary>intro</summary></entry>
+<entry><id>urn:post:2</id><title>World</title>
+<link rel="alternate" href="https://x.example/p/2"/>
+<published>2026-10-21T00:00:00Z</published><content>body</content></entry>
+</feed>"""
+
+
+def test_rss_parse_identity():
+    from quietwatch import parse_feed
+    recs = parse_feed(RSS_FEED)
+    assert len(recs) == 2
+    assert recs[0]["id"] == "https://x.example/r/1"   # guid wins
+    assert recs[1]["id"] == "https://x.example/r/2"   # link fallback
+    assert recs[1]["published"].startswith("Tue, 21 Oct")
+
+
+def test_atom_parse_identity():
+    from quietwatch import parse_feed
+    recs = parse_feed(ATOM_FEED)
+    assert len(recs) == 2
+    assert recs[0]["id"] == "urn:post:1"
+    assert recs[0]["link"] == "https://x.example/p/1"
+    assert recs[1]["description"] == "body"           # content fallback
+    assert recs[1]["published"] == "2026-10-21T00:00:00Z"
+
+
+def test_feed_diff_quiet_on_reorder_and_replay():
+    w = Watcher()
+    from quietwatch import parse_feed
+    recs = parse_feed(RSS_FEED)
+    assert w.check(recs) == [("NEW", "https://x.example/r/1"),
+                             ("NEW", "https://x.example/r/2")]
+    assert w.check(list(reversed(recs))) == []        # reorder silent
+    assert w.check(recs) == []                        # replay silent
+
+
+def test_feed_content_change_is_modified():
+    w = Watcher()
+    from quietwatch import parse_feed
+    w.check(parse_feed(RSS_FEED))
+    changed = RSS_FEED.replace("second", "second (hotfix)")
+    assert w.check(parse_feed(changed)) == [("MODIFIED", "https://x.example/r/2")]
+
+
+def test_feed_refuses_entities():
+    from quietwatch import parse_feed
+    evil = ('<?xml version="1.0"?><!DOCTYPE x [<!ENTITY a "AAAAAAAAAA">]>'
+            '<rss version="2.0"><channel></channel></rss>')
+    try:
+        parse_feed(evil)
+    except ValueError as e:
+        assert "ENTITY" in str(e)
+    else:
+        raise AssertionError("entity-laden feed must be refused")
+
+
+def test_feed_malformed_exits_2():
+    with tempfile.TemporaryDirectory() as d:
+        src = os.path.join(d, "bad.xml")
+        state = os.path.join(d, "state.json")
+        with open(src, "w") as f:
+            f.write("<rss><channel><item>unterminated")
+        rc = main(["--state", state, "--kind", "rss", src])
+        assert rc == 2
+
+
+def test_kind_auto_sniffs_feed_and_json():
+    with tempfile.TemporaryDirectory() as d:
+        feed = os.path.join(d, "feed.xml")
+        data = os.path.join(d, "data.json")
+        st1 = os.path.join(d, "s1.json")
+        st2 = os.path.join(d, "s2.json")
+        with open(feed, "w") as f:
+            f.write(RSS_FEED)
+        with open(data, "w") as f:
+            json.dump([{"id": "x", "n": 1}], f)
+        from quietwatch import load_source
+        assert len(load_source(feed)) == 2            # auto -> feed
+        assert load_source(data) == [{"id": "x", "n": 1}]   # auto -> json
+        try:
+            load_source(feed, kind="json")
+        except Exception:
+            pass                                     # json on XML errors
+        else:
+            raise AssertionError("kind=json on a feed must fail")
+
+
+def test_select_refused_for_feeds():
+    with tempfile.TemporaryDirectory() as d:
+        feed = os.path.join(d, "feed.xml")
+        state = os.path.join(d, "state.json")
+        with open(feed, "w") as f:
+            f.write(RSS_FEED)
+        rc = main(["--state", state, "--kind", "rss", "--select", "channel", feed])
+        assert rc == 2
+
+
 if __name__ == "__main__":
     test_diff_semantics()
     test_removed()
@@ -228,4 +338,12 @@ if __name__ == "__main__":
     test_volatile_empty_means_none()
     test_corrupt_state_file_is_forgiving()
     test_removed_state_cleanup()
+    test_rss_parse_identity()
+    test_atom_parse_identity()
+    test_feed_diff_quiet_on_reorder_and_replay()
+    test_feed_content_change_is_modified()
+    test_feed_refuses_entities()
+    test_feed_malformed_exits_2()
+    test_kind_auto_sniffs_feed_and_json()
+    test_select_refused_for_feeds()
     print("PASS: all quietwatch tests")

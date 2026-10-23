@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """quietwatch — change alerts without the noise.
 
-Poll a JSON source (URL, file, or command output), canonicalize each
-record, hash its content, and report only real changes:
+Poll a source (URL, file, or command output), canonicalize each record,
+hash its content, and report only real changes:
 
   - a record appears            -> NEW
   - a record's content changes  -> MODIFIED
@@ -12,6 +12,10 @@ Timestamp-only edits, key reordering, duplicates, and replayed snapshots
 are silent. State persists in a JSON file, so each alert fires exactly
 once per change, even across restarts.
 
+Sources are JSON by default; RSS 2.0 / Atom 1.0 feeds are supported via
+--kind rss (or auto-detected). Feed entries become records with
+{id,title,link,description,published} fields.
+
 Stdlib only. Python 3.9+.
 
 `--select PATH` narrows the watch to one JSON subtree before record
@@ -19,7 +23,8 @@ extraction (dot-path with optional [N] indices, e.g.
 'payload.releases' or 'envs[0].items'); changes outside the selection
 stay silent. A selection miss is an error (exit 2), never an empty
 watch. Tip: use a separate --state file per --select value, since
-record identities come from the selected subtree.
+record identities come from the selected subtree. (--select applies to
+JSON sources only; it is refused for feeds.)
 
 Exit codes: 0 = no changes, 10 = changes detected, 2 = error.
 (The distinct "changes" code makes cron/agent use trivial:
@@ -33,10 +38,16 @@ import re
 import subprocess
 import sys
 import urllib.request
+import xml.etree.ElementTree as ET
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 DEFAULT_VOLATILE = ("last_seen", "fetched_at", "timestamp", "_ts")
+
+# Feeds can be large; cap what we will parse to bound memory. XML entity
+# declarations are refused outright (see parse_feed) — stdlib ElementTree
+# expands internal entities, so accepting them is a billion-laughs hole.
+MAX_FEED_BYTES = 5 * 1024 * 1024
 
 
 def canonical(rec, volatile):
@@ -123,12 +134,114 @@ def resolve_select(data, path):
     return cur
 
 
-def load_source(source, select=None):
+def looks_like_feed(raw):
+    """Heuristic feed sniff: strip BOM/whitespace and check the opening
+    tag. Used when --kind auto (the default)."""
+    head = raw.lstrip("\ufeff").lstrip()[:512].lower()
+    return (head.startswith("<?xml")
+            or head.startswith("<rss")
+            or head.startswith("<feed")
+            or head.startswith("<rdf"))
+
+
+def _text(el):
+    return (el.text or "").strip() if el is not None else ""
+
+
+def parse_feed(raw):
+    """Parse an RSS 2.0 or Atom 1.0 document into a list of record dicts
+    ({id, title, link, description, published}), each carrying an 'id'
+    so the normal Watcher diff engine applies unchanged.
+
+    Entry identity: RSS <guid>, else <link>, else <title>; Atom <id>,
+    else link href, else <title>. Missing/empty fields become "".
+    Refuses documents with <!ENTITY declarations (internal-entity
+    expansion is a billion-laughs vector under stdlib ElementTree) and
+    anything over MAX_FEED_BYTES."""
+    if len(raw.encode("utf-8")) > MAX_FEED_BYTES:
+        raise ValueError(f"feed exceeds {MAX_FEED_BYTES} byte cap")
+    if "<!entity" in raw[:8192].lower():
+        raise ValueError("feed refused: <!ENTITY declarations not allowed")
+    try:
+        root = ET.fromstring(raw.encode("utf-8"))
+    except ET.ParseError as e:
+        raise ValueError(f"not a parseable feed: {e}")
+    tag = root.tag
+    if "}" in tag:
+        tag = tag.split("}", 1)[1]
+    if tag == "feed":
+        return _parse_atom(root)
+    if tag in ("rss", "RDF"):
+        return _parse_rss(root)
+    raise ValueError(f"unrecognized feed root element <{tag}>")
+
+
+def _parse_rss(root):
+    records = []
+    for item in root.iter("item"):
+        guid = _text(item.find("guid"))
+        link = _text(item.find("link"))
+        title = _text(item.find("title"))
+        rid = guid or link or title
+        if not rid:
+            continue                       # no identity -> not watchable
+        records.append({
+            "id": rid,
+            "title": title,
+            "link": link,
+            "description": _text(item.find("description")),
+            "published": _text(item.find("pubDate")),
+        })
+    return records
+
+
+_ATOM_NS = "{http://www.w3.org/2005/Atom}"
+
+
+def _atom_link(entry):
+    for link in entry.findall(f"{_ATOM_NS}link"):
+        href = (link.get("href") or "").strip()
+        rel = link.get("rel", "alternate")
+        if href and rel in ("alternate", None):
+            return href
+    first = entry.find(f"{_ATOM_NS}link")
+    return (first.get("href") or "").strip() if first is not None else ""
+
+
+def _parse_atom(root):
+    records = []
+    for entry in root.findall(f"{_ATOM_NS}entry"):
+        eid = _text(entry.find(f"{_ATOM_NS}id"))
+        link = _atom_link(entry)
+        title = _text(entry.find(f"{_ATOM_NS}title"))
+        rid = eid or link or title
+        if not rid:
+            continue
+        summary = _text(entry.find(f"{_ATOM_NS}summary"))
+        content = _text(entry.find(f"{_ATOM_NS}content"))
+        published = (_text(entry.find(f"{_ATOM_NS}published"))
+                     or _text(entry.find(f"{_ATOM_NS}updated")))
+        records.append({
+            "id": rid,
+            "title": title,
+            "link": link,
+            "description": summary or content,
+            "published": published,
+        })
+    return records
+
+
+def load_source(source, select=None, kind="auto"):
     """Load a snapshot (list of records) from a URL, file path, or
-    'cmd:...' shell command. Accepts a JSON array, a single JSON object,
-    or an object with a list under a common key (items/results/data).
-    If `select` is given, a dot-path (see resolve_select) is resolved
-    against the parsed JSON first, so only that subtree is watched."""
+    'cmd:...' shell command.
+
+    kind = "json": parse JSON (array, single object, or object with a
+    list under items/results/data/records). --select may narrow to a
+    subtree first.
+    kind = "rss": parse an RSS 2.0 / Atom 1.0 feed into entry records.
+    --select is refused for feeds.
+    kind = "auto" (default): sniff the body; XML-looking content is
+    treated as a feed, everything else as JSON."""
     if source.startswith("cmd:"):
         out = subprocess.run(source[4:], shell=True, capture_output=True,
                              text=True, timeout=120)
@@ -136,12 +249,20 @@ def load_source(source, select=None):
             raise RuntimeError(f"command failed ({out.returncode}): {out.stderr[:200]}")
         raw = out.stdout
     elif source.startswith(("http://", "https://")):
-        req = urllib.request.Request(source, headers={"User-Agent": "quietwatch/1.1"})
+        req = urllib.request.Request(source, headers={"User-Agent": "quietwatch/1.2"})
         with urllib.request.urlopen(req, timeout=60) as resp:
             raw = resp.read().decode("utf-8", "replace")
     else:
         with open(source, "r", encoding="utf-8") as f:
             raw = f.read()
+    if kind == "auto":
+        kind = "rss" if looks_like_feed(raw) else "json"
+    if kind == "rss":
+        if select:
+            raise ValueError("--select applies to JSON sources only")
+        return parse_feed(raw)
+    if kind != "json":
+        raise ValueError(f"unknown --kind {kind!r} (json|rss|auto)")
     data = json.loads(raw)
     if select:
         data = resolve_select(data, select)
@@ -197,7 +318,12 @@ def main(argv=None):
     p.add_argument("--select", metavar="PATH",
                    help="dot-path into the JSON before record extraction, "
                         "e.g. 'payload.releases' or 'envs[0].items' "
-                        "(default: whole document); a miss is an error")
+                        "(default: whole document); a miss is an error; "
+                        "JSON sources only")
+    p.add_argument("--kind", default="auto", choices=("auto", "json", "rss"),
+                   help="source kind: auto (default; XML-looking bodies are "
+                        "parsed as RSS/Atom feeds, everything else as JSON), "
+                        "json, or rss")
     args = p.parse_args(argv)
 
     volatile = tuple(v for v in args.volatile.split(",") if v)
@@ -205,7 +331,7 @@ def main(argv=None):
     w = Watcher(volatile=volatile, id_field=args.id_field,
                 alert_removed=not args.no_removed, state=hashes)
     try:
-        snapshot = load_source(args.source, select=args.select)
+        snapshot = load_source(args.source, select=args.select, kind=args.kind)
     except Exception as e:                       # noqa: BLE001 - CLI surface
         print(f"quietwatch: error: {e}", file=sys.stderr)
         return 2

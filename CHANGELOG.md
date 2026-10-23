@@ -3,6 +3,19 @@
 All notable changes to this project are recorded here. Dates in EDT.
 License TBD (awaiting the maintainer's per-project publication approval).
 
+## [1.2.0] — 2026-10-23
+
+- `--kind {auto,json,rss}` (default `auto`): RSS 2.0 / Atom 1.0 feeds are
+  now watchable sources. `auto` sniffs the body — XML-looking content is
+  parsed as a feed, everything else as JSON. Feed entries become records
+  `{id, title, link, description, published}` and flow through the same
+  canonical-hash diff engine, so new posts alert, reordered/replayed
+  snapshots stay silent. Identity: RSS `<guid>` (else `<link>`, else
+  `<title>`); Atom `<id>` (else link href, else `<title>`). `--select`
+  is refused for feeds (exit 2). Safety: documents with `<!ENTITY`
+  declarations are refused outright (billion-laughs vector under stdlib
+  ElementTree) and feeds are capped at 5 MiB. 8 new tests (19 total).
+
 ## [1.1.0] — 2026-10-22
 
 - `--select PATH`: watch one JSON subtree (dot-path with optional `[N]`

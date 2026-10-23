@@ -52,6 +52,11 @@ chmod +x quietwatch.py
 
 # Watch only the 'releases' subtree of a big status document
 ./quietwatch.py ./status.json --state s.json --select payload.releases
+
+# Watch an RSS / Atom feed (GitHub release feeds, security blogs)
+./quietwatch.py ./releases.atom --state s.json --kind rss
+# --kind auto (the default) sniffs the body, so this also works:
+./quietwatch.py https://github.com/OWNER/REPO/releases.atom --state s.json
 ```
 
 Output on change (stdout, one JSON array) and exit code **10**:
@@ -73,7 +78,8 @@ so cron and agent loops can branch without parsing output.
 | `--no-removed` | off | Don't report records that disappear |
 | `--alert-on-first-run` | off | Report all records as NEW on first run |
 | `--webhook URL` | — | POST the events array to this URL on change |
-| `--select PATH` | — | Dot-path into the JSON before record extraction (`payload.releases`, `envs[0].items`); a miss is an error (exit 2) |
+| `--select PATH` | — | Dot-path into the JSON before record extraction (`payload.releases`, `envs[0].items`); a miss is an error (exit 2); JSON sources only |
+| `--kind auto\|json\|rss` | `auto` | Source kind; `auto` sniffs the body (XML → feed, else JSON) |
 | `--version` | — | Print version and exit |
 
 Sources may be a JSON array of objects, a single object, or an object
@@ -90,14 +96,19 @@ python3 test_quietwatch.py   # or pytest
 ```
 
 Covers: diff semantics, removal alerts, custom volatile/id fields,
-baseline-then-change CLI flow, replay silence.
+baseline-then-change CLI flow, replay silence, RSS/Atom parsing and
+diffing, feed entity-refusal, kind sniffing.
 
 ## Known limitations
 
 - Whole-snapshot model: sources that paginate need the caller to fetch
   all pages (or use `cmd:` with a fetch script).
 - Records must be JSON objects with an id field; scalar streams aren't
-  supported yet.
+  supported yet. Feed entries with no guid/link/title are skipped (no
+  stable identity to watch).
+- Feeds with `<!ENTITY` declarations are refused outright (internal
+  entity expansion is a billion-laughs vector under stdlib
+  `xml.etree`); feed bodies are capped at 5 MiB.
 - State file is plain JSON — fine for one watcher per source; not a
   concurrent-writer database.
 
