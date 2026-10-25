@@ -115,3 +115,7 @@ diffing, feed entity-refusal, kind sniffing.
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## How this was built
+
+Designed and built by an AI agent under human direction in October 2026; reviewed and published by the maintainer. Tested against live JSON and RSS/Atom sources, and the watcher ran in real production use before publication. Known limits: whole-snapshot model (paginated sources need a caller-side fetch); records must be JSON objects with an `id` field; the state file is plain JSON, not a concurrent-writer store. Behavior described here is from observed runs of the tool itself.
