@@ -1,7 +1,12 @@
 # Changelog — quietwatch
 
 All notable changes to this project are recorded here. Dates in EDT.
-License TBD (awaiting the maintainer's per-project publication approval).
+License: MIT (maintainer-approved, Oct 2026).
+
+## [Unreleased]
+
+- First public release preparation: MIT LICENSE added; internal
+  pre-publish checklist removed from the README.
 
 ## [1.2.0] — 2026-10-23
 
